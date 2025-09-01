@@ -1,0 +1,54 @@
+[
+    {
+        "label": "Simplify 2026 Internships",
+        "repo": "SimplifyJobs/Summer2026-Internships"
+    },
+    {
+        "label": "Simplify New Grad",
+        "repo": "SimplifyJobs/New-Grad-Positions"
+    },
+    {
+        "label": "Vansh 2026 Internships",
+        "repo": "vanshb03/Summer2026-Internships"
+    },
+    {
+        "label": "Vansh New Grad 2026",
+        "repo": "vanshb03/New-Grad-2026"
+    },
+    {
+        "label": "SpeedyApply SWE 2026",
+        "repo": "speedyapply/2026-SWE-College-Jobs"
+    },
+    {
+        "label": "SpeedyApply AI/ML 2026",
+        "repo": "speedyapply/2026-AI-College-Jobs"
+    },
+    {
+        "label": "Quant Internships 2026",
+        "repo": "northwesternfintech/2026QuantInternships"
+    },
+    {
+        "label": "EU Tech Internships 2025",
+        "repo": "LorenzoLaCorte/european-tech-internships-2025"
+    },
+    {
+        "label": "Jobright New Grad 2025",
+        "repo": "jobright-ai/2025-Software-Engineer-New-Grad"
+    },
+    {
+        "label": "Zapply New Grad 2026",
+        "repo": "zapplyjobs/New-Grad-Positions"
+    },
+    {
+        "label": "Summer2026Internships (alt)",
+        "repo": "summer2026internships/Summer2026-Internships"
+    },
+    {
+        "label": "PrepAIJobs 2026 Internships",
+        "repo": "PrepAIJobs/Summer2026-Internships"
+    },
+    {
+        "label": "PrepAIJobs New Grad 2026",
+        "repo": "PrepAIJobs/New-Grad-2026"
+    }
+]

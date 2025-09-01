@@ -1,0 +1,192 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>Internship Watcher</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        :root {
+            --pad: 18px;
+        }
+
+        body {
+            margin: 0;
+            font: 16px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu
+        }
+
+        header {
+            display: flex;
+            gap: 14px;
+            justify-content: space-between;
+            align-items: center;
+            padding: var(--pad)
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 28px
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 1px solid #ddd;
+            background: #fafafa;
+            cursor: pointer;
+            text-decoration: none;
+            color: #111
+        }
+
+        .btn:hover {
+            background: #f0f0f0
+        }
+
+        .bar {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            padding: 0 var(--pad) var(--pad)
+        }
+
+        .flash {
+            background: #f6fff6;
+            border: 1px solid #bfe3bf;
+            padding: 10px 12px;
+            border-radius: 10px;
+            margin: 0 var(--pad) var(--pad)
+        }
+
+        .muted {
+            color: #666
+        }
+
+        .pill {
+            font-size: 12px;
+            padding: 3px 8px;
+            border-radius: 999px;
+            background: #eef;
+            border: 1px solid #dde
+        }
+
+        .urgent {
+            background: #fee;
+            border-color: #fbb
+        }
+
+        #search {
+            flex: 1;
+            min-width: 260px;
+            max-width: 420px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 10px
+        }
+
+        /* full-width table that uses the whole page */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed
+        }
+
+        th,
+        td {
+            padding: 12px var(--pad);
+            border-bottom: 1px solid #eee;
+            text-align: left;
+            vertical-align: top
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            background: #fff
+        }
+
+        td:nth-child(1) {
+            width: 215px
+        }
+
+        td:nth-child(2) {
+            width: 220px
+        }
+
+        td:nth-child(5) {
+            width: 180px;
+            white-space: nowrap
+        }
+
+        /* keep content readable on huge monitors */
+        main {
+            max-width: none
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>🌟 Internship Watcher</h1>
+        <div>
+            <form action="/run-now" method="post" style="display:inline">
+                <button class="btn">Check now</button>
+            </form>
+            <a class="btn" href="/logs">Open logs</a>
+        </div>
+    </header>
+
+    {% with messages = get_flashed_messages() %}
+    {% if messages %}
+    {% for m in messages %}
+    <div class="flash">{{ m }}</div>
+    {% endfor %}
+    {% endif %}
+    {% endwith %}
+
+    <div class="bar">
+        <input id="search" placeholder="Filter by company/title/location..." oninput="filterRows()">
+        <div class="muted">Last watcher line: <code>{{ last_line }}</code></div>
+        <div style="margin-left:auto" class="muted">Showing last <strong>{{ limit }}</strong> items ·
+            <a href="/?n=10">10</a> · <a href="/?n=25">25</a> · <a href="/?n=100">100</a>
+        </div>
+    </div>
+
+    <main>
+        <table id="feed">
+            <thead>
+                <tr>
+                    <th>When</th>
+                    <th>Source</th>
+                    <th>Company</th>
+                    <th>Title</th>
+                    <th>Location</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in feed %}
+                <tr>
+                    <td class="muted">{{ r.ts }}</td>
+                    <td><span class="pill {% if r.urgent %}urgent{% endif %}">{{ r.label }}</span></td>
+                    <td>{{ r.company or "-" }}</td>
+                    <td><a href="{{ r.url }}" target="_blank" rel="noreferrer">{{ r.title or r.url }}</a></td>
+                    <td>{{ r.location or "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </main>
+
+    <script>
+        function filterRows() {
+            const q = document.getElementById('search').value.toLowerCase();
+            const rows = document.querySelectorAll('#feed tbody tr');
+            rows.forEach(tr => {
+                const t = tr.innerText.toLowerCase();
+                tr.style.display = t.includes(q) ? '' : 'none';
+            });
+        }
+    </script>
+</body>
+
+</html>
