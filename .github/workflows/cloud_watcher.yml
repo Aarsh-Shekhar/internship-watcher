@@ -1,9 +1,9 @@
 name: Cloud Watcher
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes
+    - cron: "*/15 * * * *"   # runs every 15 minutes (UTC)
+  workflow_dispatch:  
 
 jobs:
   scan-and-push:
