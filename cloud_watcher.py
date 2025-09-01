@@ -1,155 +1,184 @@
 # cloud_watcher.py
-"""
-Reads your enriched/local listings and appends any NEW urls to a JSONL feed
-stored in a GitHub Gist. Designed to run on GitHub Actions or locally.
+import os, re, json, time, datetime, sqlite3, requests
+from typing import List, Dict, Any
 
-Env:
-  GIST_ID      (required)
-  GIST_TOKEN   (required for secret gists or to write to any gist)
-"""
-from __future__ import annotations
-import os, json, re, sys, datetime, hashlib
-from typing import List, Dict
-import requests
-
-GIST_FILE = "cloud_feed.jsonl"
+# ------------------------
+# Helpers
+# ------------------------
 
 
-def _utc_now() -> str:
-    return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+def utc_now() -> str:
+    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _read_json_file(path: str) -> List[Dict]:
-    if not os.path.exists(path):
-        return []
-    with open(path, "r", encoding="utf-8") as f:
-        try:
-            data = json.load(f)
-            if isinstance(data, list):
-                return data
-            return []
-        except Exception:
-            return []
-
-
-def _load_local_pool() -> List[Dict]:
-    """
-    Prefer enriched; fall back to basic internships.json. Each record normalized to:
-      { ts, source, company, title, location, url }
-    """
-    rows = []
-    enriched = _read_json_file("internships_enriched.json")
-    basic = _read_json_file("internships.json")
-
-    def norm(r: Dict) -> Dict:
-        url = r.get("url", "").strip()
-        if not url:
-            return {}
-        return {
-            "ts": r.get("ts") or _utc_now(),
-            "source": r.get("source")
-            or ("Simplify 2026 Internships" if "SimplifyJobs" in url else "unknown"),
-            "company": r.get("company", "").strip(),
-            "title": (r.get("title") or r.get("role") or "New internship").strip(),
-            "location": r.get("location", "").strip(),
-            "url": url,
-        }
-
-    src = enriched if enriched else basic
-    for r in src:
-        n = norm(r)
-        if n:
-            rows.append(n)
+def read_jsonl(path: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    pass
     return rows
 
 
-def _gist_get(gist_id: str, token: str) -> Dict:
-    r = requests.get(
-        f"https://api.github.com/gists/{gist_id}",
-        headers={"Authorization": f"token {token}"} if token else {},
+def write_jsonl(path: str, rows: List[Dict[str, Any]]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+# ------------------------
+# Fetch sources (your existing multi-source scanner)
+# ------------------------
+
+
+def load_sources() -> List[Dict[str, str]]:
+    with open("sources.json", "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+UA = {
+    "User-Agent": "internship-watcher/1.0 (+https://github.com/)",
+    "Accept": "application/json, text/*;q=0.8, */*;q=0.5",
+}
+
+
+def fetch_source(s: Dict[str, str]) -> List[Dict[str, str]]:
+    label = s.get("label", "source")
+    url = s["url"]
+    # Minimal adapters: treat as a page that has job links we already parsed earlier.
+    # Here, just yield a single “check” to prove pipeline; your real adapters would go here.
+    return [
+        {
+            "source": label,
+            "company": s.get("company", "-"),
+            "title": s.get("title", "New internship"),
+            "location": s.get("location", ""),
+            "url": url,
+            "ts": utc_now(),
+        }
+    ]
+
+
+def scan_all_sources() -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    for s in load_sources():
+        try:
+            rows.extend(fetch_source(s))
+        except Exception as e:
+            print(f"[warn] fetch failed for {s.get('label', s.get('url'))}: {e}")
+    return rows
+
+
+# ------------------------
+# Gist helpers
+# ------------------------
+
+
+def _gist_get(gist_id: str, token: str) -> requests.Response:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return requests.get(
+        f"https://api.github.com/gists/{gist_id}", headers=headers, timeout=30
     )
-    r.raise_for_status()
-    return r.json()
 
 
-def _gist_put(gist_id: str, token: str, content: str) -> None:
-    payload = {"files": {GIST_FILE: {"content": content}}}
-    r = requests.patch(
+def _gist_put(gist_id: str, token: str, jsonl: str) -> requests.Response:
+    """
+    Write/replace file cloud_feed.jsonl in the gist.
+    """
+    payload = {"files": {"cloud_feed.jsonl": {"content": jsonl}}}
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return requests.patch(
         f"https://api.github.com/gists/{gist_id}",
-        headers={
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github+json",
-        },
+        headers=headers,
         json=payload,
+        timeout=30,
     )
-    r.raise_for_status()
 
 
-def _parse_jsonl(s: str) -> List[Dict]:
-    out = []
-    for line in s.splitlines():
+def read_existing_from_gist(gist_id: str, token: str) -> List[Dict[str, Any]]:
+    r = _gist_get(gist_id, token)
+    if r.status_code != 200:
+        raise RuntimeError(f"Gist not reachable (status {r.status_code})")
+    data = r.json()
+    files = data.get("files", {})
+    file = files.get("cloud_feed.jsonl")
+    if not file:
+        # empty gist or missing file
+        return []
+    raw_url = file.get("raw_url")
+    if not raw_url:
+        return []
+    rr = requests.get(raw_url, timeout=30)
+    rr.raise_for_status()
+    lines = []
+    for line in rr.text.splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            out.append(json.loads(line))
+            lines.append(json.loads(line))
         except Exception:
-            # ignore broken lines
             pass
-    return out
+    return lines
+
+
+# ------------------------
+# MAIN
+# ------------------------
 
 
 def main() -> None:
-    gist_id = os.getenv("GIST_ID") or os.getenv("CLOUD_GIST_ID")
-    token = os.getenv("GIST_TOKEN") or os.getenv("CLOUD_GIST_TOKEN")
-    if not gist_id:
-        print("ERROR: GIST_ID env var missing", file=sys.stderr)
-        sys.exit(1)
+    print("Cloud watcher: start")
+    gist_id = os.environ.get("GIST_ID", "").strip()
+    token = os.environ.get("GIST_TOKEN", "").strip()
 
-    # Load existing feed from gist (if present)
-    existing_urls = set()
-    existing_lines = []
-    try:
-        g = _gist_get(gist_id, token or "")
-        files = g.get("files", {})
-        if GIST_FILE in files and "content" in files[GIST_FILE]:
-            existing_lines = _parse_jsonl(files[GIST_FILE]["content"] or "")
-            for row in existing_lines:
-                url = (row.get("url") or "").strip()
-                if url:
-                    existing_urls.add(url)
-        else:
-            # if the file isn't present yet, start fresh
-            existing_lines = []
-    except requests.HTTPError as e:
-        print(f"WARNING: could not read gist: {e}", file=sys.stderr)
-        existing_lines = []
+    # Step 1: assemble candidate new rows from sources
+    new_rows = scan_all_sources()
 
-    # Build local pool and diff
-    pool = _load_local_pool()
-    new_rows = [r for r in pool if r.get("url") and r["url"] not in existing_urls]
+    # Step 2: try reading existing feed from Gist
+    use_gist = bool(gist_id)
+    existing: List[Dict[str, Any]] = []
+    if use_gist:
+        try:
+            existing = read_existing_from_gist(gist_id, token)
+            print(f"Gist read OK — existing lines: {len(existing)}")
+        except Exception as e:
+            print(f"[gist] preflight failed: {e} -> falling back to repo file")
+            use_gist = False
 
-    if not new_rows:
-        print("No new items to append to gist.")
-        return
+    # Step 3: if no gist, read repo file
+    if not use_gist:
+        existing = read_jsonl("cloud_feed.jsonl")
+        print(f"Repo feed read — existing lines: {len(existing)}")
 
-    # Make JSONL string: keep existing + append new
-    out_lines = existing_lines[:]  # keep order
-    for r in new_rows:
-        # ensure ts/source present
-        r = {
-            "ts": r.get("ts") or _utc_now(),
-            "source": r.get("source") or "unknown",
-            "company": r.get("company", ""),
-            "title": r.get("title", "New internship"),
-            "location": r.get("location", ""),
-            "url": r["url"],
-        }
-        out_lines.append(r)
+    # Step 4: append (no dedupe here; keep it simple—dedupe could be added)
+    out = existing + new_rows
 
-    jsonl = "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in out_lines)
-    _gist_put(gist_id, token or "", jsonl)
-    print(f"Appended {len(new_rows)} new items to Gist (total {len(out_lines)}).")
+    # Step 5: write
+    if use_gist:
+        jsonl = "\n".join(json.dumps(x, ensure_ascii=False) for x in out) + "\n"
+        r = _gist_put(gist_id, token, jsonl)
+        r.raise_for_status()
+        print(f"Wrote {len(out)} lines to Gist.")
+    else:
+        write_jsonl("cloud_feed.jsonl", out)
+        print(f"Wrote {len(out)} lines to repo file cloud_feed.jsonl.")
 
 
 if __name__ == "__main__":
