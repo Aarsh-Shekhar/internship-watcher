@@ -1,10 +1,6 @@
 # cloud_watcher.py
-import os, re, json, time, datetime, sqlite3, requests
+import os, json, datetime, requests
 from typing import List, Dict, Any
-
-# ------------------------
-# Helpers
-# ------------------------
 
 
 def utc_now() -> str:
@@ -32,54 +28,47 @@ def write_jsonl(path: str, rows: List[Dict[str, Any]]) -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
-# ------------------------
-# Fetch sources (your existing multi-source scanner)
-# ------------------------
-
-
 def load_sources() -> List[Dict[str, str]]:
-    with open("sources.json", "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open("sources.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
 
 
-UA = {
-    "User-Agent": "internship-watcher/1.0 (+https://github.com/)",
-    "Accept": "application/json, text/*;q=0.8, */*;q=0.5",
-}
+def fetch_source(s: Dict[str, str]) -> Dict[str, str]:
+    """
+    Very light record builder. We only require a URL to anchor the row.
+    If you want full scraping here, wire this to your real adapters later.
+    """
+    label = s.get("label") or s.get("name") or "source"
+    url = s.get("url") or s.get("rss") or s.get("feed") or s.get("endpoint")
+    if not url:
+        raise KeyError("url")
 
-
-def fetch_source(s: Dict[str, str]) -> List[Dict[str, str]]:
-    label = s.get("label", "source")
-    url = s["url"]
-    # Minimal adapters: treat as a page that has job links we already parsed earlier.
-    # Here, just yield a single “check” to prove pipeline; your real adapters would go here.
-    return [
-        {
-            "source": label,
-            "company": s.get("company", "-"),
-            "title": s.get("title", "New internship"),
-            "location": s.get("location", ""),
-            "url": url,
-            "ts": utc_now(),
-        }
-    ]
+    return {
+        "ts": utc_now(),
+        "source": label,
+        "company": s.get("company", "-"),
+        "title": s.get("title", "New internship"),
+        "location": s.get("location", ""),
+        "url": url,
+    }
 
 
 def scan_all_sources() -> List[Dict[str, str]]:
     rows: List[Dict[str, str]] = []
     for s in load_sources():
         try:
-            rows.extend(fetch_source(s))
+            rows.append(fetch_source(s))
         except Exception as e:
-            print(f"[warn] fetch failed for {s.get('label', s.get('url'))}: {e}")
+            print(
+                f"[warn] fetch failed for {s.get('label', s.get('name', 'source'))}: {e!s}"
+            )
     return rows
 
 
-# ------------------------
-# Gist helpers
-# ------------------------
-
-
+# ---------- Gist helpers ----------
 def _gist_get(gist_id: str, token: str) -> requests.Response:
     headers = {
         "Accept": "application/vnd.github+json",
@@ -93,9 +82,6 @@ def _gist_get(gist_id: str, token: str) -> requests.Response:
 
 
 def _gist_put(gist_id: str, token: str, jsonl: str) -> requests.Response:
-    """
-    Write/replace file cloud_feed.jsonl in the gist.
-    """
     payload = {"files": {"cloud_feed.jsonl": {"content": jsonl}}}
     headers = {
         "Accept": "application/vnd.github+json",
@@ -113,72 +99,73 @@ def _gist_put(gist_id: str, token: str, jsonl: str) -> requests.Response:
 
 def read_existing_from_gist(gist_id: str, token: str) -> List[Dict[str, Any]]:
     r = _gist_get(gist_id, token)
-    if r.status_code != 200:
-        raise RuntimeError(f"Gist not reachable (status {r.status_code})")
+    r.raise_for_status()
     data = r.json()
-    files = data.get("files", {})
-    file = files.get("cloud_feed.jsonl")
+    file = (data.get("files") or {}).get("cloud_feed.jsonl")
     if not file:
-        # empty gist or missing file
         return []
     raw_url = file.get("raw_url")
     if not raw_url:
         return []
     rr = requests.get(raw_url, timeout=30)
     rr.raise_for_status()
-    lines = []
+    rows: List[Dict[str, Any]] = []
     for line in rr.text.splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            lines.append(json.loads(line))
+            rows.append(json.loads(line))
         except Exception:
             pass
-    return lines
-
-
-# ------------------------
-# MAIN
-# ------------------------
+    return rows
 
 
 def main() -> None:
     print("Cloud watcher: start")
+
     gist_id = os.environ.get("GIST_ID", "").strip()
     token = os.environ.get("GIST_TOKEN", "").strip()
 
-    # Step 1: assemble candidate new rows from sources
+    # Build new rows (skip sources missing URLs, but don't crash)
     new_rows = scan_all_sources()
 
-    # Step 2: try reading existing feed from Gist
+    # Prefer gist; if we can't reach or write it, fall back to repo file
     use_gist = bool(gist_id)
     existing: List[Dict[str, Any]] = []
+
     if use_gist:
         try:
             existing = read_existing_from_gist(gist_id, token)
             print(f"Gist read OK — existing lines: {len(existing)}")
         except Exception as e:
-            print(f"[gist] preflight failed: {e} -> falling back to repo file")
+            print(f"[gist] GET failed ({e}); falling back to repo file")
             use_gist = False
 
-    # Step 3: if no gist, read repo file
     if not use_gist:
         existing = read_jsonl("cloud_feed.jsonl")
         print(f"Repo feed read — existing lines: {len(existing)}")
 
-    # Step 4: append (no dedupe here; keep it simple—dedupe could be added)
     out = existing + new_rows
+    print(f"Prepared {len(new_rows)} new rows; writing total {len(out)} lines")
 
-    # Step 5: write
     if use_gist:
-        jsonl = "\n".join(json.dumps(x, ensure_ascii=False) for x in out) + "\n"
-        r = _gist_put(gist_id, token, jsonl)
-        r.raise_for_status()
-        print(f"Wrote {len(out)} lines to Gist.")
-    else:
+        try:
+            jsonl = "\n".join(json.dumps(x, ensure_ascii=False) for x in out) + "\n"
+            r = _gist_put(gist_id, token, jsonl)
+            r.raise_for_status()
+            print(f"Gist write OK — total lines now {len(out)}")
+            return
+        except Exception as e:
+            print(f"[gist] PUT failed ({e}); falling back to repo file")
+
+    # Fallback: write to repo file (workflow will commit it)
+    try:
         write_jsonl("cloud_feed.jsonl", out)
-        print(f"Wrote {len(out)} lines to repo file cloud_feed.jsonl.")
+        print(f"Repo feed write OK — total lines now {len(out)}")
+    except Exception as e:
+        # Even in failure, exit gracefully so the workflow can still complete
+        print(f"[repo] write failed: {e}")
 
 
 if __name__ == "__main__":
